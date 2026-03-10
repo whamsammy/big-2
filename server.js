@@ -348,4 +348,4 @@ wss.on('connection', ws => {
   });
 });
 
-server.listen(PORT, () => console.log(`Big 2 server running on port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`Big 2 server running on port ${PORT}`));
