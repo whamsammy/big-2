@@ -344,6 +344,15 @@ wss.on('connection', ws => {
       return;
     }
 
+    // ── CHAT ─────────────────────────────────────────────────────────────────
+    if (msg.type === 'chat') {
+      if (!myRoom || myRoom.state !== 'playing') return;
+      const text = (msg.text || '').slice(0, 120).trim();
+      if (!text) return;
+      broadcast(myRoom, { type: 'chat', from: myIdx, text });
+      return;
+    }
+
     // ── REMATCH ──────────────────────────────────────────────────────────────
     if (msg.type === 'rematch') {
       myRoom.rematchVotes++;
