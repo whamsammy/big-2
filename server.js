@@ -157,6 +157,7 @@ function gameState(room, forPlayerIdx) {
     currentPlayBy: room.currentPlayBy,
     passCount: room.passCount,
     firstTurn: room.firstTurn,
+    lowestCard: room.firstTurn ? room.lowestCard : null,
     gameOver: room.state === 'done',
     winner: room.winner || null,
   };
@@ -176,11 +177,17 @@ function startGame(room) {
   room.passCount = 0;
   room.firstTurn = true;
 
-  // player holding 3♦ goes first
-  const starterIdx = room.players.findIndex(p =>
-    p.hand.some(c => c.rank === '3' && c.suit === '♦')
-  );
-  room.currentTurn = starterIdx >= 0 ? starterIdx : 0;
+  // find who holds the lowest card overall (3♦ is lowest, but works for any deal)
+  let lowestValue = Infinity;
+  let starterIdx = 0;
+  room.players.forEach((p, i) => {
+    p.hand.forEach(c => {
+      const v = cardValue(c);
+      if (v < lowestValue) { lowestValue = v; starterIdx = i; }
+    });
+  });
+  room.currentTurn = starterIdx;
+  room.lowestCard = room.players[starterIdx].hand.find(c => cardValue(c) === lowestValue);
 
   broadcastState(room);
   broadcast(room, { type: 'started', firstTurn: room.currentTurn });
@@ -261,10 +268,14 @@ wss.on('connection', ws => {
       const playType = getPlayType(played);
       if (!playType) { ws.send(JSON.stringify({ type: 'error', msg: 'Invalid combination.' })); return; }
 
-      // first turn must include 3♦
+      // first turn must include the lowest card in play
       if (myRoom.firstTurn) {
-        const has3d = played.some(c => c.rank === '3' && c.suit === '♦');
-        if (!has3d) { ws.send(JSON.stringify({ type: 'error', msg: 'First play must include 3♦.' })); return; }
+        const lowest = myRoom.lowestCard;
+        const hasLowest = played.some(c => c.rank === lowest.rank && c.suit === lowest.suit);
+        if (!hasLowest) {
+          ws.send(JSON.stringify({ type: 'error', msg: `First play must include ${lowest.rank}${lowest.suit}.` }));
+          return;
+        }
       }
 
       // must beat current play (unless leading)
