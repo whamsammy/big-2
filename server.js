@@ -26,7 +26,6 @@ function makeDeck() {
   for (const rank of RANKS)
     for (const suit of SUITS)
       deck.push({ rank, suit });
-  // shuffle
   for (let i = deck.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [deck[i], deck[j]] = [deck[j], deck[i]];
@@ -34,7 +33,7 @@ function makeDeck() {
   return deck;
 }
 
-// ── Play validation ───────────────────────────────────────────────────────────
+// ── Play type detection ───────────────────────────────────────────────────────
 function getPlayType(cards) {
   const n = cards.length;
   const sorted = sortCards(cards);
@@ -61,136 +60,112 @@ function getPlayType(cards) {
 function getFiveCardType(sorted) {
   const ranks = sorted.map(c => RANKS.indexOf(c.rank));
   const suits = sorted.map(c => c.suit);
-  const isFlush = suits.every(s => s === suits[0]);
-  const isStraight = ranks.every((r, i) => i === 0 || r === ranks[i-1] + 1);
+  const isFlush    = suits.every(s => s === suits[0]);
+  const isStraight = ranks.every((r, i) => i === 0 || r === ranks[i - 1] + 1);
 
-  // straight flush
   if (isFlush && isStraight)
     return { type: 'straightflush', value: cardValue(sorted[4]) };
 
-  // four of a kind + 1
   const rankGroups = {};
   sorted.forEach(c => { rankGroups[c.rank] = (rankGroups[c.rank] || 0) + 1; });
-  const counts = Object.values(rankGroups).sort((a,b) => b-a);
+  const counts = Object.values(rankGroups).sort((a, b) => b - a);
+
   if (counts[0] === 4) {
     const quadRank = Object.keys(rankGroups).find(r => rankGroups[r] === 4);
     return { type: 'fourkind', value: RANKS.indexOf(quadRank) * 4 + 3 };
   }
 
-  // full house
   if (counts[0] === 3 && counts[1] === 2) {
     const tripRank = Object.keys(rankGroups).find(r => rankGroups[r] === 3);
     return { type: 'fullhouse', value: RANKS.indexOf(tripRank) * 4 + 3 };
   }
 
-  // flush
+  // House rule: flush winner decided by suit (♠ > ♥ > ♣ > ♦), not card values
   if (isFlush)
-    return { type: 'flush', value: cardValue(sorted[4]) };
+    return { type: 'flush', value: SUITS.indexOf(suits[0]) };
 
-  // straight
   if (isStraight)
     return { type: 'straight', value: cardValue(sorted[4]) };
 
   return null;
 }
 
-// Five-card type rank order: straight < flush < fullhouse < fourkind < straightflush
-const FIVE_RANK = ['straight','flush','fullhouse','fourkind','straightflush'];
+// Five-card hand hierarchy (lowest to highest)
+const FIVE_RANK = ['straight', 'flush', 'fullhouse', 'fourkind', 'straightflush'];
 
 function beats(play, current) {
-  if (!current) return true; // leading
+  if (!current) return true; // leading, anything goes
 
   const p = getPlayType(play);
   const c = getPlayType(current);
   if (!p || !c) return false;
-  if (p.type !== c.type) {
-    // five-card hands can beat each other by type
-    if (play.length === 5 && current.length === 5) {
-      return FIVE_RANK.indexOf(p.type) > FIVE_RANK.indexOf(c.type);
-    }
-    return false;
-  }
   if (play.length !== current.length) return false;
+
+  // five-card hands: higher type wins; same type, higher value wins
+  if (play.length === 5) {
+    const pRank = FIVE_RANK.indexOf(p.type);
+    const cRank = FIVE_RANK.indexOf(c.type);
+    if (pRank !== cRank) return pRank > cRank;
+    return p.value > c.value;
+  }
+
+  // singles, pairs, triples: must be same type, higher value wins
+  if (p.type !== c.type) return false;
   return p.value > c.value;
 }
 
-// ── Room management ──────────────────────────────────────────────────────────
+// ── Room helpers ──────────────────────────────────────────────────────────────
 const rooms = {};
 
 function createRoom(code) {
   return {
     code,
-    players: [],   // [{ ws, name, hand, id }]
-    state: 'waiting', // waiting | playing | done
-    currentTurn: 0,   // index into players
+    players: [],
+    state: 'waiting',
+    currentTurn: 0,
     currentPlay: null,
     currentPlayBy: null,
     passCount: 0,
     firstTurn: true,
+    lowestCard: null,
+    winner: null,
+    rematchVotes: 0,
   };
-}
-
-function broadcast(room, msg) {
-  room.players.forEach(p => {
-    if (p.ws.readyState === 1) p.ws.send(JSON.stringify(msg));
-  });
 }
 
 function sendTo(player, msg) {
   if (player.ws.readyState === 1) player.ws.send(JSON.stringify(msg));
 }
 
-function gameState(room, forPlayerIdx) {
-  const me = room.players[forPlayerIdx];
+function broadcast(room, msg) {
+  room.players.forEach(p => sendTo(p, msg));
+}
+
+function buildState(room, forPlayerIdx) {
+  const me  = room.players[forPlayerIdx];
   const opp = room.players[1 - forPlayerIdx];
   return {
-    type: 'state',
-    myHand: sortCards(me.hand),
-    oppCardCount: opp ? opp.hand.length : 0,
-    oppName: opp ? opp.name : null,
-    oppEmoji: opp ? opp.emoji : null,
-    myEmoji: me.emoji,
-    myName: me.name,
-    myIdx: forPlayerIdx,
-    currentTurn: room.currentTurn,
-    currentPlay: room.currentPlay,
+    type:          'state',
+    myHand:        sortCards(me.hand),
+    oppCardCount:  opp ? opp.hand.length : 0,
+    oppName:       opp ? opp.name : null,
+    oppEmoji:      opp ? opp.emoji : null,
+    myEmoji:       me.emoji,
+    myName:        me.name,
+    myIdx:         forPlayerIdx,
+    currentTurn:   room.currentTurn,
+    currentPlay:   room.currentPlay,
     currentPlayBy: room.currentPlayBy,
-    passCount: room.passCount,
-    firstTurn: room.firstTurn,
-    lowestCard: room.firstTurn ? room.lowestCard : null,
-    gameOver: room.state === 'done',
-    winner: room.winner || null,
+    passCount:     room.passCount,
+    firstTurn:     room.firstTurn,
+    lowestCard:    room.firstTurn ? room.lowestCard : null,
+    gameOver:      room.state === 'done',
+    winner:        room.winner,
   };
 }
 
 function broadcastState(room) {
-  room.players.forEach((p, i) => sendTo(p, gameState(room, i)));
-}
-
-function startGame(room) {
-  const deck = makeDeck();
-  room.players[0].hand = deck.slice(0, 13);
-  room.players[1].hand = deck.slice(13, 26);
-  room.state = 'playing';
-  room.currentPlay = null;
-  room.currentPlayBy = null;
-  room.passCount = 0;
-  room.firstTurn = true;
-
-  // find who holds the lowest card overall (3♦ is lowest, but works for any deal)
-  let lowestValue = Infinity;
-  let starterIdx = 0;
-  room.players.forEach((p, i) => {
-    p.hand.forEach(c => {
-      const v = cardValue(c);
-      if (v < lowestValue) { lowestValue = v; starterIdx = i; }
-    });
-  });
-  room.currentTurn = starterIdx;
-  room.lowestCard = room.players[starterIdx].hand.find(c => cardValue(c) === lowestValue);
-
-  broadcastState(room);
-  broadcast(room, { type: 'started', firstTurn: room.currentTurn });
+  room.players.forEach((p, i) => sendTo(p, buildState(room, i)));
 }
 
 function genCode() {
@@ -198,6 +173,35 @@ function genCode() {
   let code = '';
   for (let i = 0; i < 4; i++) code += chars[Math.floor(Math.random() * chars.length)];
   return code;
+}
+
+function startGame(room) {
+  const deck = makeDeck();
+  room.players[0].hand = deck.slice(0, 13);
+  room.players[1].hand = deck.slice(13, 26);
+
+  room.state        = 'playing';
+  room.currentPlay  = null;
+  room.currentPlayBy = null;
+  room.passCount    = 0;
+  room.firstTurn    = true;
+  room.winner       = null;
+  room.rematchVotes = 0;
+
+  // whoever holds the single lowest card goes first
+  let lowestValue = Infinity;
+  let starterIdx  = 0;
+  room.players.forEach((p, i) => {
+    p.hand.forEach(c => {
+      const v = cardValue(c);
+      if (v < lowestValue) { lowestValue = v; starterIdx = i; }
+    });
+  });
+  room.currentTurn = starterIdx;
+  room.lowestCard  = room.players[starterIdx].hand.find(c => cardValue(c) === lowestValue);
+
+  broadcastState(room);
+  broadcast(room, { type: 'started' });
 }
 
 // ── Connection handler ────────────────────────────────────────────────────────
@@ -209,12 +213,11 @@ wss.on('connection', ws => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
 
-    // ── JOIN ──
+    // ── JOIN ─────────────────────────────────────────────────────────────────
     if (msg.type === 'join') {
       const name = (msg.name || 'Player').slice(0, 16);
       let code = (msg.code || '').toUpperCase().trim();
 
-      // find or create room
       if (code && rooms[code]) {
         myRoom = rooms[code];
       } else {
@@ -237,7 +240,12 @@ wss.on('connection', ws => {
       myRoom.players.push({ ws, name, hand: [], id: myIdx, emoji: msg.emoji || '🎴' });
 
       ws.send(JSON.stringify({ type: 'joined', code: myRoom.code, playerIdx: myIdx, name }));
-      broadcast(myRoom, { type: 'lobby', players: myRoom.players.map(p => p.name), emojis: myRoom.players.map(p => p.emoji), code: myRoom.code });
+      broadcast(myRoom, {
+        type:    'lobby',
+        players: myRoom.players.map(p => p.name),
+        emojis:  myRoom.players.map(p => p.emoji),
+        code:    myRoom.code,
+      });
 
       if (myRoom.players.length === 2) startGame(myRoom);
       return;
@@ -245,7 +253,7 @@ wss.on('connection', ws => {
 
     if (!myRoom || myIdx === null) return;
 
-    // ── PLAY ──
+    // ── PLAY ─────────────────────────────────────────────────────────────────
     if (msg.type === 'play') {
       if (myRoom.state !== 'playing') return;
       if (myRoom.currentTurn !== myIdx) {
@@ -253,49 +261,54 @@ wss.on('connection', ws => {
         return;
       }
 
-      const me = myRoom.players[myIdx];
-      const played = msg.cards; // [{ rank, suit }, ...]
+      const me     = myRoom.players[myIdx];
+      const played = msg.cards;
 
-      // verify player actually holds these cards
+      // verify all played cards are in hand
       const handCopy = [...me.hand];
       for (const pc of played) {
         const idx = handCopy.findIndex(c => c.rank === pc.rank && c.suit === pc.suit);
-        if (idx === -1) { ws.send(JSON.stringify({ type: 'error', msg: 'Card not in hand.' })); return; }
+        if (idx === -1) {
+          ws.send(JSON.stringify({ type: 'error', msg: 'Card not in hand.' }));
+          return;
+        }
         handCopy.splice(idx, 1);
       }
 
-      // validate play type
+      // validate combination
       const playType = getPlayType(played);
-      if (!playType) { ws.send(JSON.stringify({ type: 'error', msg: 'Invalid combination.' })); return; }
+      if (!playType) {
+        ws.send(JSON.stringify({ type: 'error', msg: 'Invalid combination.' }));
+        return;
+      }
 
-      // first turn must include the lowest card in play
+      // first play must include the lowest card
       if (myRoom.firstTurn) {
-        const lowest = myRoom.lowestCard;
-        const hasLowest = played.some(c => c.rank === lowest.rank && c.suit === lowest.suit);
+        const lc = myRoom.lowestCard;
+        const hasLowest = played.some(c => c.rank === lc.rank && c.suit === lc.suit);
         if (!hasLowest) {
-          ws.send(JSON.stringify({ type: 'error', msg: `First play must include ${lowest.rank}${lowest.suit}.` }));
+          ws.send(JSON.stringify({ type: 'error', msg: `First play must include ${lc.rank}${lc.suit}.` }));
           return;
         }
       }
 
-      // must beat current play (unless leading)
+      // must beat current play
       if (myRoom.currentPlay && !beats(played, myRoom.currentPlay)) {
-        ws.send(JSON.stringify({ type: 'error', msg: 'Doesn\'t beat the current play.' }));
+        ws.send(JSON.stringify({ type: 'error', msg: "Doesn't beat the current play." }));
         return;
       }
 
-      // commit
-      me.hand = handCopy;
-      myRoom.currentPlay = played;
+      // commit play
+      me.hand            = handCopy;
+      myRoom.currentPlay  = played;
       myRoom.currentPlayBy = myIdx;
-      myRoom.passCount = 0;
-      myRoom.firstTurn = false;
+      myRoom.passCount   = 0;
+      myRoom.firstTurn   = false;
 
       broadcast(myRoom, { type: 'played', by: myIdx, byName: me.name, cards: played, playType: playType.type });
 
-      // check win
       if (me.hand.length === 0) {
-        myRoom.state = 'done';
+        myRoom.state  = 'done';
         myRoom.winner = myIdx;
         broadcastState(myRoom);
         broadcast(myRoom, { type: 'gameover', winner: myIdx, winnerName: me.name });
@@ -307,61 +320,46 @@ wss.on('connection', ws => {
       return;
     }
 
-    // ── PASS ──
+    // ── PASS ─────────────────────────────────────────────────────────────────
     if (msg.type === 'pass') {
       if (myRoom.state !== 'playing') return;
       if (myRoom.currentTurn !== myIdx) return;
-      if (!myRoom.currentPlay) { ws.send(JSON.stringify({ type: 'error', msg: 'Cannot pass when leading.' })); return; }
+      if (!myRoom.currentPlay) {
+        ws.send(JSON.stringify({ type: 'error', msg: 'Cannot pass when leading.' }));
+        return;
+      }
 
       const me = myRoom.players[myIdx];
-      myRoom.passCount++;
       broadcast(myRoom, { type: 'passed', by: myIdx, byName: me.name });
 
-      // with 2 players, one pass = you led, opponent passed = you lead again
-      if (myRoom.passCount >= 1 && myRoom.currentPlayBy !== null) {
-        // opponent passed on your play — you lead freely
-        myRoom.currentPlay = null;
-        myRoom.currentPlayBy = null;
-        myRoom.passCount = 0;
-        myRoom.currentTurn = myRoom.currentPlayBy !== null
-          ? (1 - myIdx)  // go back to who played last
-          : myIdx;
-        // simply: whoever's play was last leads again
-        myRoom.currentTurn = 1 - myIdx; // the non-passer
-        // correct: after a pass, the last player who played leads
-        myRoom.currentTurn = myIdx === myRoom.currentPlayBy ? myIdx : 1 - myIdx;
-        broadcastState(myRoom);
-        broadcast(myRoom, { type: 'newlead', leader: myRoom.currentTurn });
-      } else {
-        myRoom.currentTurn = 1 - myIdx;
-        broadcastState(myRoom);
-      }
+      // in 2-player: one pass means the other player led unchallenged — they lead again
+      const lastPlayedBy = myRoom.currentPlayBy;
+      myRoom.currentPlay  = null;
+      myRoom.currentPlayBy = null;
+      myRoom.passCount    = 0;
+      myRoom.currentTurn  = lastPlayedBy;
+
+      broadcastState(myRoom);
+      broadcast(myRoom, { type: 'newlead', leader: lastPlayedBy });
       return;
     }
 
-    // ── REMATCH ──
+    // ── REMATCH ──────────────────────────────────────────────────────────────
     if (msg.type === 'rematch') {
-      myRoom.rematchVotes = (myRoom.rematchVotes || 0) + 1;
+      myRoom.rematchVotes++;
       broadcast(myRoom, { type: 'rematchVote', votes: myRoom.rematchVotes });
-      if (myRoom.rematchVotes >= 2) {
-        myRoom.rematchVotes = 0;
-        myRoom.state = 'playing';
-        myRoom.winner = null;
-        startGame(myRoom);
-      }
+      if (myRoom.rematchVotes >= 2) startGame(myRoom);
     }
   });
 
   ws.on('close', () => {
-    if (myRoom) {
-      broadcast(myRoom, { type: 'disconnected', playerIdx: myIdx });
-      // clean up room if empty
-      setTimeout(() => {
-        if (myRoom && myRoom.players.every(p => p.ws.readyState !== 1)) {
-          delete rooms[myRoom.code];
-        }
-      }, 30000);
-    }
+    if (!myRoom) return;
+    broadcast(myRoom, { type: 'disconnected', playerIdx: myIdx });
+    setTimeout(() => {
+      if (myRoom.players.every(p => p.ws.readyState !== 1)) {
+        delete rooms[myRoom.code];
+      }
+    }, 30000);
   });
 });
 
