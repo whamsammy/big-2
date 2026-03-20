@@ -161,6 +161,7 @@ function buildState(room, forPlayerIdx) {
     lowestCard:    room.firstTurn ? room.lowestCard : null,
     gameOver:      room.state === 'done',
     winner:        room.winner,
+    oppHand:       room.state === 'done' && opp ? sortCards(opp.hand) : null,
   };
 }
 
